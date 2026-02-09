@@ -11,11 +11,16 @@ fi
 REPO="${REPO:-enzofrasca/femtobot}"
 VERSION="${1:-}"
 RELEASE_NAME="v${VERSION}"
+IS_PRERELEASE=false
 
 if [[ -z "${VERSION}" ]]; then
     echo "Usage: ./release.sh <version>"
     echo "Example: ./release.sh 0.1.0"
     exit 1
+fi
+
+if [[ "${VERSION}" == *-* ]]; then
+    IS_PRERELEASE=true
 fi
 
 echo "Creating release v${VERSION} for ${REPO}..."
@@ -69,7 +74,7 @@ RELEASE_DATA=$(cat <<EOF
   "name": "${RELEASE_NAME}",
   "body": "femtobot v${VERSION}\n\nBinaries for Linux and macOS (Intel and Apple Silicon)",
   "draft": false,
-  "prerelease": false
+  "prerelease": ${IS_PRERELEASE}
 }
 EOF
 )
