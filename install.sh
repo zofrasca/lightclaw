@@ -5,7 +5,6 @@ VERSION="${VERSION:-latest}"
 REPO="${REPO:-enzofrasca/femtobot}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 BINARY_NAME="femtobot"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 TEMP_DIR=$(mktemp -d)
 cleanup() { rm -rf "${TEMP_DIR}"; }
 trap cleanup EXIT
@@ -64,6 +63,70 @@ get_binary_name() {
     local os_type="${platform%%-*}"
     local arch_type="${platform##*-}"
     echo "femtobot-${os_type}-${arch_type}"
+}
+
+resolve_download_url() {
+    local version="$1"
+    local release_tag="$version"
+
+    if [[ "${version}" == "latest" ]]; then
+        echo "https://github.com/${REPO}/releases/latest/download"
+        return
+    fi
+
+    if [[ "${release_tag}" != v* ]]; then
+        release_tag="v${release_tag}"
+    fi
+    echo "https://github.com/${REPO}/releases/download/${release_tag}"
+}
+
+is_supported_platform() {
+    local platform="$1"
+    case "${platform}" in
+        linux-x86_64|linux-aarch64|darwin-x86_64|darwin-aarch64)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+verify_checksum() {
+    local asset_name="$1"
+    local downloaded_file="$2"
+    local checksum_file="${TEMP_DIR}/${asset_name}.sha256"
+    local checksum_url="${DOWNLOAD_URL}/${asset_name}.sha256"
+
+    if ! download "${checksum_url}" "${checksum_file}" >/dev/null 2>&1; then
+        warn "Checksum file not found (${asset_name}.sha256). Skipping checksum verification."
+        return
+    fi
+
+    local expected actual
+    expected="$(awk '{print $1}' "${checksum_file}")"
+    if [[ -z "${expected}" ]]; then
+        error "Checksum file is empty or malformed: ${checksum_file}"
+        exit 1
+    fi
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "${downloaded_file}" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 "${downloaded_file}" | awk '{print $1}')"
+    else
+        warn "No SHA-256 tool found (sha256sum/shasum). Skipping checksum verification."
+        return
+    fi
+
+    if [[ "${expected}" != "${actual}" ]]; then
+        error "Checksum mismatch for ${asset_name}"
+        error "Expected: ${expected}"
+        error "Actual:   ${actual}"
+        exit 1
+    fi
+
+    info "Checksum verified for ${asset_name}"
 }
 
 create_config() {
@@ -127,8 +190,17 @@ setup_service() {
         return
     fi
 
+    if [[ ! -t 0 ]]; then
+        warn "Non-interactive install detected; skipping optional systemd service setup."
+        return
+    fi
+
     echo ""
-    read -p "Enable femtobot as systemd service? [y/N]: " enable_service
+    if ! read -r -p "Enable femtobot as systemd service? [y/N]: " enable_service; then
+        warn "Unable to read service setup prompt; skipping systemd setup."
+        return
+    fi
+
     if [[ "${enable_service}" =~ ^[Yy]$ ]]; then
         local service_dir="$HOME/.config/systemd/user"
         mkdir -p "${service_dir}"
@@ -147,9 +219,18 @@ Restart=on-failure
 WantedBy=default.target
 EOF
 
-        systemctl --user daemon-reload
-        systemctl --user enable femtobot
-        systemctl --user start femtobot
+        if ! systemctl --user daemon-reload; then
+            warn "Failed to reload systemd user daemon. Service file was created but not enabled."
+            return
+        fi
+        if ! systemctl --user enable femtobot; then
+            warn "Failed to enable femtobot service. You can enable it manually later."
+            return
+        fi
+        if ! systemctl --user start femtobot; then
+            warn "Failed to start femtobot service. You can start it manually later."
+            return
+        fi
 
         info "Service enabled and started!"
     fi
@@ -166,10 +247,17 @@ main() {
     PLATFORM=$(detect_platform)
     OS_TYPE="${PLATFORM%%-*}"
     ARCH_TYPE="${PLATFORM##*-}"
+    DOWNLOAD_URL="$(resolve_download_url "${VERSION}")"
 
     if [[ "${OS_TYPE}" == "unknown" ]] || [[ "${ARCH_TYPE}" == "unknown" ]]; then
         error "Unable to detect your platform: $(uname -s) $(uname -m)"
-        error "Supported platforms: linux/darwin with x86_64/aarch64"
+        error "Supported platforms: linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64"
+        exit 1
+    fi
+
+    if ! is_supported_platform "${PLATFORM}"; then
+        error "Unsupported platform: ${PLATFORM}"
+        error "Supported platforms: linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64"
         exit 1
     fi
 
@@ -191,6 +279,8 @@ main() {
         error "Downloaded file not found"
         exit 1
     fi
+
+    verify_checksum "${BINARY_FILE}" "${DOWNLOAD_FILE}"
 
     chmod +x "${DOWNLOAD_FILE}"
 
