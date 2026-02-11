@@ -11,7 +11,7 @@
 
 `femtobot` is a fast, local-first AI assistant inspired by [OpenClaw](https://github.com/openclaw/openclaw) and [nanobot](https://github.com/HKUDS/nanobot), packaged as a single Rust binary.
 
-If you want agentic tooling, memory, and Telegram integration without a heavy runtime, femtobot is built for that.
+If you want agentic tooling, memory, and Telegram/Discord integration without a heavy runtime, femtobot is built for that.
 
 ## Why femtobot
 
@@ -42,7 +42,7 @@ Note: A Windows binary exists, but it is currently less stable and not as well-s
 
 - Single-binary deploy: ship one executable, no Python runtime.
 - Tool-capable agent: file, shell, web, and scheduling actions.
-- Telegram-native interface: high-performance polling built in.
+- Telegram/Discord-native interface: high-performance polling built in.
 - Local-first memory: vectors + metadata stored locally with SQLite.
 - Rust reliability: strong typing, memory safety, and concurrency.
 
