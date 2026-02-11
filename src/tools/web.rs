@@ -48,7 +48,9 @@ where
             .parse::<u8>()
             .map(Some)
             .map_err(|_| D::Error::custom("count string must be an integer between 0 and 255")),
-        Some(_) => Err(D::Error::custom("count must be an integer or integer string")),
+        Some(_) => Err(D::Error::custom(
+            "count must be an integer or integer string",
+        )),
     }
 }
 

@@ -99,6 +99,11 @@ Create `~/.femtobot/config.json`:
         "context_bias": "",
         "timestamp_granularities": ["segment"]
       }
+    },
+    "discord": {
+      "token": "YOUR_DISCORD_BOT_TOKEN",
+      "allow_from": ["123456789012345678"],
+      "allowed_channels": ["123456789012345678"]
     }
   }
 }
@@ -123,6 +128,7 @@ femtobot uses an actor-like model with a central `MessageBus`:
 
 - `Agent`: context handling and LLM orchestration.
 - `Telegram`: chat input/output transport.
+- `Discord`: chat input/output transport.
 - `Tools`: executable capability modules.
 - `Memory`: extraction, retrieval, and consolidation loop.
 

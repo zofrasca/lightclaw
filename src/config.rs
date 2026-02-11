@@ -55,6 +55,9 @@ pub struct AppConfig {
     pub brave_api_key: Option<String>,
     pub telegram_bot_token: String,
     pub telegram_allow_from: Vec<String>,
+    pub discord_bot_token: String,
+    pub discord_allow_from: Vec<String>,
+    pub discord_allowed_channels: Vec<String>,
     pub transcription_enabled: bool,
     pub transcription_provider: String,
     pub transcription_model: String,
@@ -121,6 +124,9 @@ impl AppConfig {
             brave_api_key: None,
             telegram_bot_token: String::new(),
             telegram_allow_from: Vec::new(),
+            discord_bot_token: String::new(),
+            discord_allow_from: Vec::new(),
+            discord_allowed_channels: Vec::new(),
             transcription_enabled: true,
             transcription_provider: "openai".to_string(),
             transcription_model: "whisper-1".to_string(),
@@ -160,6 +166,10 @@ impl AppConfig {
 
     pub fn telegram_enabled(&self) -> bool {
         !self.telegram_bot_token.trim().is_empty()
+    }
+
+    pub fn discord_enabled(&self) -> bool {
+        !self.discord_bot_token.trim().is_empty()
     }
 
     pub fn model_routes(&self) -> Vec<ModelRoute> {
@@ -282,6 +292,15 @@ fn apply_femtobot_config(cfg: &mut AppConfig, value: &Value) {
     }
     if let Some(list) = get_array(value, &["channels", "telegram", "allow_from"]) {
         cfg.telegram_allow_from = list;
+    }
+    if let Some(token) = get_str(value, &["channels", "discord", "token"]) {
+        cfg.discord_bot_token = token.to_string();
+    }
+    if let Some(list) = get_array(value, &["channels", "discord", "allow_from"]) {
+        cfg.discord_allow_from = list;
+    }
+    if let Some(list) = get_array(value, &["channels", "discord", "allowed_channels"]) {
+        cfg.discord_allowed_channels = list;
     }
     if let Some(enabled) = get_bool(value, &["channels", "telegram", "transcription", "enabled"]) {
         cfg.transcription_enabled = enabled;
@@ -490,6 +509,25 @@ fn apply_env_overrides(cfg: &mut AppConfig) {
         std::env::var("TELOXIDE_TOKEN").or_else(|_| std::env::var("TELEGRAM_BOT_TOKEN"))
     {
         cfg.telegram_bot_token = token;
+    }
+    if let Ok(token) = std::env::var("DISCORD_BOT_TOKEN") {
+        cfg.discord_bot_token = token;
+    }
+    if let Ok(val) = std::env::var("FEMTOBOT_DISCORD_ALLOW_FROM") {
+        cfg.discord_allow_from = val
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+    }
+    if let Ok(val) = std::env::var("FEMTOBOT_DISCORD_ALLOWED_CHANNELS") {
+        cfg.discord_allowed_channels = val
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
     }
     if let Ok(brave) = std::env::var("BRAVE_API_KEY") {
         cfg.brave_api_key = Some(brave);

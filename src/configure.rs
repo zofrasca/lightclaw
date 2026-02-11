@@ -18,13 +18,14 @@ pub fn run() -> Result<()> {
     loop {
         println!("Menu:");
         println!("1. Configure provider (OpenRouter/OpenAI/Ollama)");
-        println!("2. Configure Telegram");
-        println!("3. Configure model");
-        println!("4. Configure web search (Brave)");
-        println!("5. Configure transcription");
-        println!("6. Show config path");
-        println!("7. Save and exit");
-        println!("8. Exit without saving");
+        println!("2. Configure model");
+        println!("3. Configure Telegram");
+        println!("4. Configure Discord");
+        println!("5. Configure web search (Brave)");
+        println!("6. Configure transcription");
+        println!("7. Show config path");
+        println!("8. Save and exit");
+        println!("9. Exit without saving");
         print!("Select an option: ");
         io::stdout().flush()?;
 
@@ -37,25 +38,29 @@ pub fn run() -> Result<()> {
                 dirty = root != initial_root;
             }
             "2" => {
-                let _ = configure_telegram(&mut root)?;
-                dirty = root != initial_root;
-            }
-            "3" => {
                 let _ = configure_model(&mut root)?;
                 dirty = root != initial_root;
             }
+            "3" => {
+                let _ = configure_telegram(&mut root)?;
+                dirty = root != initial_root;
+            }
             "4" => {
-                let _ = configure_web_search(&mut root)?;
+                let _ = configure_discord(&mut root)?;
                 dirty = root != initial_root;
             }
             "5" => {
-                let _ = configure_transcription(&mut root)?;
+                let _ = configure_web_search(&mut root)?;
                 dirty = root != initial_root;
             }
             "6" => {
-                println!("Config path: {}", path.display());
+                let _ = configure_transcription(&mut root)?;
+                dirty = root != initial_root;
             }
             "7" => {
+                println!("Config path: {}", path.display());
+            }
+            "8" => {
                 if dirty {
                     print_change_summary(&initial_root, &root);
                     save_config_value(&path, &root)?;
@@ -65,7 +70,7 @@ pub fn run() -> Result<()> {
                 }
                 break;
             }
-            "8" | "q" | "Q" => {
+            "9" | "q" | "Q" => {
                 if dirty {
                     println!("Exited without saving.");
                 }
@@ -185,6 +190,72 @@ fn configure_telegram(root: &mut Value) -> Result<bool> {
         root,
         &["channels", "telegram", "allow_from"],
         Value::Array(allow_list.into_iter().map(Value::String).collect()),
+    )?;
+
+    Ok(root != &before)
+}
+
+fn configure_discord(root: &mut Value) -> Result<bool> {
+    let before = root.clone();
+    let current_token = get_str_at(root, &["channels", "discord", "token"]).unwrap_or("");
+    let current_allow = get_array_at(root, &["channels", "discord", "allow_from"]);
+    let current_allow_str = if current_allow.is_empty() {
+        String::new()
+    } else {
+        current_allow.join(",")
+    };
+    let current_channels = get_array_at(root, &["channels", "discord", "allowed_channels"]);
+    let current_channels_str = if current_channels.is_empty() {
+        String::new()
+    } else {
+        current_channels.join(",")
+    };
+
+    let token = prompt_secret("Discord bot token", current_token)?;
+    let allow_from = prompt_with_current(
+        "Allowed Discord users (IDs/usernames, comma separated)",
+        &current_allow_str,
+    )?;
+    let allowed_channels = prompt_with_current(
+        "Allowed Discord channel IDs for guild messages (comma separated, blank = all)",
+        &current_channels_str,
+    )?;
+
+    let allow_list = if allow_from.trim().is_empty() {
+        current_allow
+    } else {
+        allow_from
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+    };
+    let channel_list = if allowed_channels.trim().is_empty() {
+        current_channels
+    } else {
+        allowed_channels
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+    };
+
+    set_path(
+        root,
+        &["channels", "discord", "token"],
+        Value::String(token),
+    )?;
+    set_path(
+        root,
+        &["channels", "discord", "allow_from"],
+        Value::Array(allow_list.into_iter().map(Value::String).collect()),
+    )?;
+    set_path(
+        root,
+        &["channels", "discord", "allowed_channels"],
+        Value::Array(channel_list.into_iter().map(Value::String).collect()),
     )?;
 
     Ok(root != &before)
@@ -340,12 +411,11 @@ fn configure_transcription(root: &mut Value) -> Result<bool> {
     )?;
 
     if provider == "mistral" {
-        let diarize = prompt_bool_with_current(
-            "Enable diarization (true/false)",
-            current_diarize,
+        let diarize = prompt_bool_with_current("Enable diarization (true/false)", current_diarize)?;
+        let context_bias = prompt_with_current(
+            "Context bias (comma-separated terms)",
+            &current_context_bias,
         )?;
-        let context_bias =
-            prompt_with_current("Context bias (comma-separated terms)", &current_context_bias)?;
         let grans_raw = prompt_with_current(
             "Timestamp granularities (comma-separated e.g. segment,word)",
             &current_grans_str,

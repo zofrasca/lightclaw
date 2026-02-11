@@ -1,4 +1,4 @@
-use crate::bus::{BusHandle, InboundMessage, MessageBus};
+use crate::bus::{InboundMessage, MessageBus};
 use crate::config::AppConfig;
 use crate::transcription::Transcriber;
 use anyhow::{anyhow, Result};
@@ -9,13 +9,13 @@ use teloxide::prelude::*;
 use teloxide::types::{ChatAction, FileId, ParseMode};
 use tracing::{info, warn};
 
-pub async fn start(cfg: AppConfig, bus: MessageBus, bus_handle: BusHandle) -> Result<()> {
+pub async fn start(cfg: AppConfig, bus: MessageBus) -> Result<()> {
     let bot = Bot::new(cfg.telegram_bot_token.clone());
     bot.get_me()
         .await
         .map_err(|err| anyhow!("telegram authentication failed: {err}"))?;
 
-    spawn_outbound_forwarder(bot.clone(), bus_handle);
+    spawn_outbound_forwarder(bot.clone(), bus.subscribe_outbound());
 
     let allowlist = cfg.telegram_allow_from.clone();
     let transcriber = Transcriber::from_config(&cfg);
@@ -162,16 +162,22 @@ fn is_allowed(msg: &Message, allowlist: &[String]) -> bool {
     })
 }
 
-fn spawn_outbound_forwarder(bot: Bot, bus_handle: BusHandle) {
+fn spawn_outbound_forwarder(
+    bot: Bot,
+    mut outbound_rx: tokio::sync::broadcast::Receiver<crate::bus::OutboundMessage>,
+) {
     tokio::spawn(async move {
         loop {
-            let next = {
-                let mut rx = bus_handle.outbound_rx.lock().await;
-                rx.recv().await
-            };
-            let Some(msg) = next else {
-                info!("outbound channel closed, forwarder shutting down");
-                break;
+            let msg = match outbound_rx.recv().await {
+                Ok(msg) => msg,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    info!("outbound channel closed, telegram forwarder shutting down");
+                    break;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!("telegram outbound lagged, skipped {skipped} message(s)");
+                    continue;
+                }
             };
             if msg.channel != "telegram" {
                 continue;
@@ -409,8 +415,8 @@ fn escape_markdown_v2_url(input: &str) -> String {
 
 fn push_escaped_markdown_v2_char(out: &mut String, ch: char) {
     match ch {
-        '_' | '*' | '[' | ']' | '(' | ')' | '~' | '`' | '>' | '#' | '+' | '-' | '=' | '|'
-        | '{' | '}' | '.' | '!' | '\\' => {
+        '_' | '*' | '[' | ']' | '(' | ')' | '~' | '`' | '>' | '#' | '+' | '-' | '=' | '|' | '{'
+        | '}' | '.' | '!' | '\\' => {
             out.push('\\');
             out.push(ch);
         }

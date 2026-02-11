@@ -3,6 +3,7 @@ mod bus;
 mod config;
 mod configure;
 mod cron;
+mod discord;
 mod memory;
 mod session_compaction;
 mod telegram;
@@ -60,7 +61,7 @@ async fn main() -> Result<()> {
 async fn run() -> Result<()> {
     let cfg = config::AppConfig::load()?;
 
-    let (bus, bus_handle) = bus::MessageBus::new();
+    let bus = bus::MessageBus::new();
 
     // Start Cron Service
     let cron_service = cron::CronService::new(&cfg, bus.clone());
@@ -71,17 +72,40 @@ async fn run() -> Result<()> {
         agent.run().await;
     });
 
+    let mut enabled_channels = 0usize;
+
     if cfg.telegram_enabled() {
-        if let Err(err) = telegram::start(cfg, bus, bus_handle).await {
-            warn!("telegram disabled: {err}");
-            warn!("femtobot is running without Telegram input/output; press Ctrl+C to exit");
-            wait_for_shutdown().await?;
-        }
+        enabled_channels += 1;
+        let telegram_cfg = cfg.clone();
+        let telegram_bus = bus.clone();
+        tokio::spawn(async move {
+            if let Err(err) = telegram::start(telegram_cfg, telegram_bus).await {
+                warn!("telegram disabled: {err}");
+            }
+        });
     } else {
         info!("Telegram token not configured; running without Telegram input/output");
         info!("Set TELOXIDE_TOKEN or channels.telegram.token to enable Telegram");
-        wait_for_shutdown().await?;
     }
+
+    if cfg.discord_enabled() {
+        enabled_channels += 1;
+        let discord_cfg = cfg.clone();
+        let discord_bus = bus.clone();
+        tokio::spawn(async move {
+            if let Err(err) = discord::start(discord_cfg, discord_bus).await {
+                warn!("discord disabled: {err}");
+            }
+        });
+    } else {
+        info!("Discord token not configured; running without Discord input/output");
+        info!("Set DISCORD_BOT_TOKEN or channels.discord.token to enable Discord");
+    }
+
+    if enabled_channels == 0 {
+        warn!("femtobot is running without chat input/output; press Ctrl+C to exit");
+    }
+    wait_for_shutdown().await?;
 
     Ok(())
 }
@@ -94,7 +118,7 @@ async fn wait_for_shutdown() -> Result<()> {
 async fn handle_cron(cmd: CronCommands) -> Result<()> {
     let cfg = config::AppConfig::load()?;
     // We don't need a real bus for CLI operations acting on the store
-    let (bus, _) = bus::MessageBus::new();
+    let bus = bus::MessageBus::new();
     let service = cron::CronService::new(&cfg, bus);
 
     match cmd {
@@ -164,7 +188,7 @@ async fn handle_cron(cmd: CronCommands) -> Result<()> {
 
 async fn run_tui() -> Result<()> {
     let cfg = config::AppConfig::load()?;
-    let (bus, bus_handle) = bus::MessageBus::new();
+    let bus = bus::MessageBus::new();
 
     let cron_service = cron::CronService::new(&cfg, bus.clone());
     cron_service.start().await;
@@ -174,14 +198,14 @@ async fn run_tui() -> Result<()> {
         agent.run().await;
     });
 
+    let bus_for_outbound = bus.clone();
     tokio::spawn(async move {
+        let mut outbound_rx = bus_for_outbound.subscribe_outbound();
         loop {
-            let next = {
-                let mut rx = bus_handle.outbound_rx.lock().await;
-                rx.recv().await
-            };
-            let Some(msg) = next else {
-                break;
+            let msg = match outbound_rx.recv().await {
+                Ok(msg) => msg,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             };
             if msg.channel != "tui" {
                 continue;
