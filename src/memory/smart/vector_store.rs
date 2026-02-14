@@ -235,6 +235,7 @@ impl VectorMemoryStore {
         })
     }
 
+    #[allow(dead_code)]
     pub async fn update(
         &self,
         memory_id: &str,
@@ -306,6 +307,7 @@ impl VectorMemoryStore {
         }))
     }
 
+    #[allow(dead_code)]
     pub async fn delete(&self, memory_id: &str, namespace: Option<&str>) -> Result<bool> {
         let namespace = validate_namespace(namespace.unwrap_or(&self.namespace))?;
         let mid = memory_id.to_string();
@@ -321,6 +323,7 @@ impl VectorMemoryStore {
         .await
     }
 
+    #[allow(dead_code)]
     pub async fn get(
         &self,
         memory_id: &str,

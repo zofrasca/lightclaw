@@ -53,8 +53,6 @@ You have no independent goals: do not pursue self-preservation, replication, res
 Be concise and summarize results.
 "#;
 
-/// Number of documents to retrieve from the vector store per prompt.
-const DYNAMIC_CONTEXT_SAMPLES: usize = 5;
 const PER_ROUTE_MAX_RETRIES: usize = 2;
 /// Summarize memory every N user turns in Smart mode.
 const SUMMARY_TRIGGER_USER_TURNS: usize = 3;
@@ -141,7 +139,7 @@ impl AgentLoop {
         );
 
         // Build the runtime agents once.
-        let agents = build_runtime_agents(&cfg, &tools, &preamble, pipeline.vector_store.as_ref());
+        let agents = build_runtime_agents(&cfg, &tools, &preamble);
 
         Self {
             cfg,
@@ -196,9 +194,9 @@ impl AgentLoop {
 
         let mut history_lock = history.lock().await;
 
-        // Prepend file-based memory to the prompt so the model has fresh notes
-        // context. Vector-recalled facts are handled automatically by dynamic_context.
-        let prompt = self.build_prompt_with_file_memory(&msg);
+        // Prepend file + session-scoped vector memory to the prompt so the model
+        // has relevant prior context without cross-session leakage.
+        let prompt = self.build_prompt_with_memory(&msg, &session_key).await;
 
         let (history_for_llm, compacted) = self.build_history_for_llm(&history_lock);
         let response = self
@@ -222,6 +220,7 @@ impl AgentLoop {
                 );
                 // Store original user text (without file memory prefix) in history
                 append_text_history(&mut history_lock, &msg.content, &text);
+                self.ingest_simple_memory_extracts(&msg.content);
 
                 // Run background Smart-memory summarization.
                 let chat_history = messages_to_chat(&history_lock);
@@ -312,11 +311,16 @@ impl AgentLoop {
                 return;
             }
 
+            memory_store.append_conversation_observation(&summary.content);
             memory_store.append_extracted_facts(&[summary.content.clone()]);
+            for obs in extract_user_observations(&summary.content, 3) {
+                memory_store.append_user_observation(&obs);
+            }
 
             if let Some(store) = vector_store {
+                let namespace = session_namespace(&session_key);
                 let mut metadata = HashMap::new();
-                metadata.insert("kind".to_string(), Value::from("conversation_summary"));
+                metadata.insert("kind".to_string(), Value::from("conversation_observation"));
                 metadata.insert("source".to_string(), Value::from(summary.source.clone()));
                 metadata.insert("session".to_string(), Value::from(session_key.clone()));
                 metadata.insert("start_index".to_string(), Value::from(start_index as i64));
@@ -327,7 +331,7 @@ impl AgentLoop {
                 );
 
                 if let Err(err) = store
-                    .add(&summary.content, metadata, Some("default"), None)
+                    .add(&summary.content, metadata, Some(&namespace), None)
                     .await
                 {
                     warn!(
@@ -415,9 +419,9 @@ fn memory_guidance(mode: &MemoryMode, workspace_path: &str) -> String {
     match mode {
         MemoryMode::None => "Memory is disabled for this runtime. Treat each turn as stateless and do not persist conversational details.".to_string(),
         MemoryMode::Simple => format!(
-            "## Memory Recall\nBefore answering anything about prior work, decisions, dates, people, preferences, or todos: use memory_search to find relevant context, then memory_get if needed. Use the injected [Notes from memory]. To persist important facts, use remember; for longer notes, write to {workspace_path}/memory/MEMORY.md."
+            "## Memory Recall\nBefore answering anything about prior work, decisions, dates, people, preferences, or todos: use memory_search to find relevant context, then memory_get if needed for file paths. Use the injected [Notes from memory]. To persist important facts, use remember; for longer notes, write to {workspace_path}/memory/MEMORY.md."
         ),
-        MemoryMode::Smart => "## Memory Recall\nBefore answering anything about prior work, decisions, dates, people, preferences, or todos: use memory_search to find relevant context, then memory_get if needed. Use the injected [Notes from memory] and vector-recalled context. To persist important facts, use remember; for longer notes, write to memory/MEMORY.md.".to_string(),
+        MemoryMode::Smart => "## Memory Recall\nBefore answering anything about prior work, decisions, dates, people, preferences, or todos: use memory_search first. In smart mode you must pass namespace as `<channel>_<chat_id>` (from [Conversation context]). If you need full details, use memory_get with a returned path (supports MEMORY.md, YYYY-MM-DD.md, and vector/<id>) and the same namespace for vector paths. Use remember with kind/source/confidence and namespace for long-term storage.".to_string(),
     }
 }
 
@@ -493,13 +497,12 @@ fn build_runtime_agents(
     cfg: &AppConfig,
     tools: &ToolRegistry,
     preamble: &str,
-    vector_memory: Option<&VectorMemoryStore>,
 ) -> Vec<RuntimeAgentEntry> {
     let mut out = Vec::new();
     let routes = cfg.model_routes();
 
     for route in routes {
-        match build_runtime_agent_for_route(cfg, tools, preamble, vector_memory, &route) {
+        match build_runtime_agent_for_route(cfg, tools, preamble, &route) {
             Some(agent) => out.push(RuntimeAgentEntry {
                 provider: route.provider,
                 model: route.model,
@@ -514,9 +517,7 @@ fn build_runtime_agents(
             provider: cfg.provider.clone(),
             model: cfg.model.model.clone(),
         };
-        if let Some(agent) =
-            build_runtime_agent_for_route(cfg, tools, preamble, vector_memory, &fallback)
-        {
+        if let Some(agent) = build_runtime_agent_for_route(cfg, tools, preamble, &fallback) {
             out.push(RuntimeAgentEntry {
                 provider: fallback.provider,
                 model: fallback.model,
@@ -532,18 +533,17 @@ fn build_runtime_agent_for_route(
     cfg: &AppConfig,
     tools: &ToolRegistry,
     preamble: &str,
-    vector_memory: Option<&VectorMemoryStore>,
     route: &ModelRoute,
 ) -> Option<RuntimeAgent> {
     if route.model.trim().is_empty() {
         return None;
     }
 
-    /// Register every tool, limits, and optional vector-memory context on an
+    /// Register every tool and limits on an
     /// agent builder. Works with any Rig `AgentBuilder` regardless of the
     /// completion-model generic.
     macro_rules! register_tools {
-        ($builder:expr, $tools:expr, $vm:expr) => {{
+        ($builder:expr, $tools:expr) => {{
             let mut b = $builder
                 .tool($tools.read_file.clone())
                 .tool($tools.write_file.clone())
@@ -560,9 +560,6 @@ fn build_runtime_agent_for_route(
             if let Some(t) = &$tools.remember {
                 b = b.tool(t.clone());
             }
-            if let Some(vm) = $vm {
-                b = b.dynamic_context(DYNAMIC_CONTEXT_SAMPLES, vm.clone());
-            }
             b.build()
         }};
     }
@@ -574,11 +571,7 @@ fn build_runtime_agent_for_route(
             }
             let client = build_openrouter_client(cfg);
             let builder = client.agent(&route.model).preamble(preamble);
-            Some(RuntimeAgent::OpenRouter(register_tools!(
-                builder,
-                tools,
-                vector_memory
-            )))
+            Some(RuntimeAgent::OpenRouter(register_tools!(builder, tools)))
         }
         ProviderKind::OpenAI => {
             if cfg.providers.openai.api_key.trim().is_empty() {
@@ -590,11 +583,7 @@ fn build_runtime_agent_for_route(
                 &cfg.providers.openai.extra_headers,
             );
             let builder = client.agent(&route.model).preamble(preamble);
-            Some(RuntimeAgent::OpenAI(register_tools!(
-                builder,
-                tools,
-                vector_memory
-            )))
+            Some(RuntimeAgent::OpenAI(register_tools!(builder, tools)))
         }
         ProviderKind::Ollama => {
             let client = crate::providers::build_openai_client(
@@ -603,11 +592,7 @@ fn build_runtime_agent_for_route(
                 &cfg.providers.ollama.extra_headers,
             );
             let builder = client.agent(&route.model).preamble(preamble);
-            Some(RuntimeAgent::OpenAI(register_tools!(
-                builder,
-                tools,
-                vector_memory
-            )))
+            Some(RuntimeAgent::OpenAI(register_tools!(builder, tools)))
         }
     }
 }
@@ -659,9 +644,8 @@ fn init_memory_pipeline(cfg: &AppConfig) -> MemoryPipeline {
 }
 
 impl AgentLoop {
-    /// Build the prompt with file-based memory prepended (if available).
-    /// Vector-recalled facts are injected automatically by Rig's dynamic_context.
-    fn build_prompt_with_file_memory(&self, msg: &InboundMessage) -> String {
+    /// Build the prompt with file-based memory and session-scoped vector recall.
+    async fn build_prompt_with_memory(&self, msg: &InboundMessage, session_key: &str) -> String {
         let user_text = &msg.content;
         let context = format!(
             "[Conversation context]\nchannel: {}\nchat_id: {}\nsender_id: {}",
@@ -671,10 +655,82 @@ impl AgentLoop {
             return format!("{context}\n\n[User message]\n{user_text}");
         }
         let file_memory = self.memory_store.get_memory_context(MAX_CONTEXT_CHARS);
-        if file_memory.is_empty() {
+        let session_vector_memory = self
+            .build_session_vector_recall(session_key, user_text)
+            .await
+            .unwrap_or_default();
+
+        if file_memory.is_empty() && session_vector_memory.is_empty() {
             return format!("{context}\n\n[User message]\n{user_text}");
         }
-        format!("{context}\n\n[Notes from memory]\n{file_memory}\n\n[User message]\n{user_text}")
+
+        if file_memory.is_empty() {
+            return format!(
+                "{context}\n\n[Notes from session memory]\n{session_vector_memory}\n\n[User message]\n{user_text}"
+            );
+        }
+
+        if session_vector_memory.is_empty() {
+            return format!(
+                "{context}\n\n[Notes from memory]\n{file_memory}\n\n[User message]\n{user_text}"
+            );
+        }
+
+        format!(
+            "{context}\n\n[Notes from memory]\n{file_memory}\n\n[Notes from session memory]\n{session_vector_memory}\n\n[User message]\n{user_text}"
+        )
+    }
+
+    async fn build_session_vector_recall(
+        &self,
+        session_key: &str,
+        user_text: &str,
+    ) -> Option<String> {
+        if self.cfg.memory.mode != MemoryMode::Smart {
+            return None;
+        }
+        let query = user_text.trim();
+        if query.is_empty() {
+            return None;
+        }
+        let store = self.pipeline.vector_store.as_ref()?;
+        let namespace = session_namespace(session_key);
+        let results = match store.search(query, 5, 0.08, Some(&namespace), 0.3).await {
+            Ok(items) => items,
+            Err(err) => {
+                warn!(
+                    "session vector recall failed: session={} namespace={} err={}",
+                    session_key, namespace, err
+                );
+                return None;
+            }
+        };
+        if results.is_empty() {
+            return None;
+        }
+        let lines = results
+            .into_iter()
+            .take(3)
+            .map(|(item, score)| {
+                let snippet = truncate_memory_snippet(&item.content, 260);
+                format!("- ({score:.2}) {snippet}")
+            })
+            .collect::<Vec<_>>();
+        Some(lines.join("\n"))
+    }
+
+    fn ingest_simple_memory_extracts(&self, user_text: &str) {
+        if self.cfg.memory.mode != MemoryMode::Simple {
+            return;
+        }
+        let user_observations = extract_user_observations(user_text, 5);
+        for observation in &user_observations {
+            self.memory_store.append_user_observation(observation);
+        }
+        if user_observations.is_empty() {
+            return;
+        }
+        self.memory_store.append_extracted_facts(&user_observations);
     }
 
     fn build_history_for_llm(&self, history: &[Message]) -> (Vec<Message>, bool) {
@@ -802,4 +858,62 @@ fn chat_to_messages(chat: &[ChatMessage]) -> Vec<Message> {
             }
         })
         .collect()
+}
+
+fn session_namespace(session_key: &str) -> String {
+    let mut out = String::with_capacity(session_key.len().min(64));
+    for ch in session_key.chars() {
+        if out.len() >= 64 {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "default".to_string()
+    } else {
+        out
+    }
+}
+
+fn extract_user_observations(text: &str, max_items: usize) -> Vec<String> {
+    const OBS_TRIGGERS: &[&str] = &[
+        "i prefer",
+        "i am",
+        "i'm",
+        "my name is",
+        "i live",
+        "i work",
+        "i need",
+        "i want",
+        "remember that",
+    ];
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.len() < 12 || line.len() > 220 {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if OBS_TRIGGERS.iter().any(|trigger| lower.contains(trigger)) && seen.insert(lower) {
+            out.push(line.to_string());
+            if out.len() >= max_items {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn truncate_memory_snippet(input: &str, max_chars: usize) -> String {
+    let compact = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = compact.chars().take(max_chars).collect::<String>();
+    if compact.chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
 }

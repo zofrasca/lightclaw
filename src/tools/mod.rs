@@ -59,12 +59,12 @@ impl ToolRegistry {
         };
         let memory_search =
             memory::MemorySearchTool::new(memory_store.clone(), vector_store.clone());
-        let memory_get = memory::MemoryGetTool::new(memory_store.clone());
+        let memory_get = memory::MemoryGetTool::new(memory_store.clone(), vector_store.clone());
         let remember = match cfg.memory.mode {
             MemoryMode::None => None,
             MemoryMode::Simple => Some(memory::RememberTool::new_file(memory_store.clone())),
             MemoryMode::Smart => vector_store
-                .map(memory::RememberTool::new_vector)
+                .map(|store| memory::RememberTool::new_hybrid(store, memory_store.clone()))
                 .or_else(|| Some(memory::RememberTool::new_file(memory_store.clone()))),
         };
         Self {

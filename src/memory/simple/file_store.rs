@@ -12,6 +12,9 @@ pub const MAX_CONTEXT_CHARS: usize = MAX_CONTEXT_TOKENS * CHARS_PER_TOKEN;
 const MAX_EXTRACTED_NOTES_CHARS: usize = 8000;
 const EXTRACTED_SECTION_HEADER: &str = "## Extracted Notes";
 const REMEMBERED_FACTS_SECTION_HEADER: &str = "## Remembered Facts";
+const CONVERSATION_OBSERVATIONS_SECTION_HEADER: &str = "## Conversation Observations";
+const USER_OBSERVATIONS_SECTION_HEADER: &str = "## User Observations";
+const GROUNDED_FACTS_SECTION_HEADER: &str = "## Grounded Facts";
 static MEMORY_FILE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Clone)]
@@ -74,47 +77,112 @@ impl MemoryStore {
     /// MEMORY.md. If the section grows past `MAX_EXTRACTED_NOTES_CHARS`, the
     /// oldest bullet points are trimmed from the top.
     pub fn append_extracted_facts(&self, facts: &[String]) {
-        if facts.is_empty() {
+        let today = today_date();
+        let entries: Vec<String> = facts.iter().map(|f| format!("- [{today}] {f}")).collect();
+        self.append_section_entries(
+            EXTRACTED_SECTION_HEADER,
+            &entries,
+            Some(MAX_EXTRACTED_NOTES_CHARS),
+        );
+    }
+
+    pub fn append_remembered_fact(&self, fact: &str) {
+        let fact = fact.trim();
+        if fact.is_empty() {
             return;
         }
+        let today = today_date();
+        self.append_section_entries(
+            REMEMBERED_FACTS_SECTION_HEADER,
+            &[format!("- [{today}] {fact}")],
+            None,
+        );
+    }
+
+    pub fn append_conversation_observation(&self, observation: &str) {
+        let observation = observation.trim();
+        if observation.is_empty() {
+            return;
+        }
+        let today = today_date();
+        self.append_section_entries(
+            CONVERSATION_OBSERVATIONS_SECTION_HEADER,
+            &[format!("- [{today}] {observation}")],
+            None,
+        );
+    }
+
+    pub fn append_user_observation(&self, observation: &str) {
+        let observation = observation.trim();
+        if observation.is_empty() {
+            return;
+        }
+        let today = today_date();
+        self.append_section_entries(
+            USER_OBSERVATIONS_SECTION_HEADER,
+            &[format!("- [{today}] {observation}")],
+            None,
+        );
+    }
+
+    pub fn append_grounded_fact(&self, fact: &str, source: &str, confidence: f32) {
+        let fact = fact.trim();
+        if fact.is_empty() {
+            return;
+        }
+        let source = if source.trim().is_empty() {
+            "unknown"
+        } else {
+            source.trim()
+        };
+        let confidence = confidence.clamp(0.0, 1.0);
+        let today = today_date();
+        self.append_section_entries(
+            GROUNDED_FACTS_SECTION_HEADER,
+            &[format!(
+                "- [{today}] {fact} (source: {source}, confidence: {confidence:.2})"
+            )],
+            None,
+        );
+    }
+
+    fn append_section_entries(
+        &self,
+        section_header: &str,
+        entries: &[String],
+        max_section_chars: Option<usize>,
+    ) {
+        if entries.is_empty() {
+            return;
+        }
+
         let _guard = match MEMORY_FILE_LOCK.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
 
-        let today = today_date();
-        let new_bullets: String = facts
-            .iter()
-            .map(|f| format!("- [{today}] {f}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
+        let new_lines = entries.join("\n");
         let existing = fs::read_to_string(&self.memory_file).unwrap_or_default();
-
-        let updated = if let Some(section_start) = existing.find(EXTRACTED_SECTION_HEADER) {
-            // Section exists -- append bullets after header.
-            let after_header = section_start + EXTRACTED_SECTION_HEADER.len();
+        let updated = if let Some(section_start) = existing.find(section_header) {
+            let after_header = section_start + section_header.len();
             let mut before = existing[..after_header].to_string();
             let rest = &existing[after_header..];
-
-            // Find the end of the extracted section: either the next `## ` header or EOF.
-            let section_end = rest.find("\n## ").map(|pos| pos).unwrap_or(rest.len());
+            let section_end = rest.find("\n## ").unwrap_or(rest.len());
             let section_body = rest[..section_end].trim_start_matches('\n');
             let after_section = &rest[section_end..];
-
-            // Build updated section body.
             let mut combined = if section_body.is_empty() {
-                new_bullets
+                new_lines
             } else {
-                format!("{section_body}\n{new_bullets}")
+                format!("{section_body}\n{new_lines}")
             };
 
-            // Trim oldest entries if too large.
-            while combined.len() > MAX_EXTRACTED_NOTES_CHARS {
-                if let Some(newline_pos) = combined.find('\n') {
-                    combined = combined[newline_pos + 1..].to_string();
-                } else {
-                    break;
+            if let Some(limit) = max_section_chars {
+                while combined.len() > limit {
+                    if let Some(newline_pos) = combined.find('\n') {
+                        combined = combined[newline_pos + 1..].to_string();
+                    } else {
+                        break;
+                    }
                 }
             }
 
@@ -123,56 +191,11 @@ impl MemoryStore {
             before.push_str(after_section);
             before
         } else {
-            // Section doesn't exist -- append at end of file.
             let mut content = existing;
             if !content.is_empty() && !content.ends_with('\n') {
                 content.push('\n');
             }
-            content.push_str(&format!("\n{EXTRACTED_SECTION_HEADER}\n{new_bullets}\n"));
-            content
-        };
-
-        if let Ok(mut file) = fs::File::create(&self.memory_file) {
-            let _ = file.write_all(updated.as_bytes());
-        }
-    }
-
-    pub fn append_remembered_fact(&self, fact: &str) {
-        let fact = fact.trim();
-        if fact.is_empty() {
-            return;
-        }
-        let _guard = match MEMORY_FILE_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-
-        let today = today_date();
-        let bullet = format!("- [{today}] {fact}");
-        let existing = fs::read_to_string(&self.memory_file).unwrap_or_default();
-
-        let updated = if let Some(section_start) = existing.find(REMEMBERED_FACTS_SECTION_HEADER) {
-            let after_header = section_start + REMEMBERED_FACTS_SECTION_HEADER.len();
-            let mut before = existing[..after_header].to_string();
-            let rest = &existing[after_header..];
-            let section_end = rest.find("\n## ").unwrap_or(rest.len());
-            let section_body = rest[..section_end].trim_start_matches('\n');
-            let after_section = &rest[section_end..];
-            let combined = if section_body.is_empty() {
-                bullet
-            } else {
-                format!("{section_body}\n{bullet}")
-            };
-            before.push('\n');
-            before.push_str(&combined);
-            before.push_str(after_section);
-            before
-        } else {
-            let mut content = existing;
-            if !content.is_empty() && !content.ends_with('\n') {
-                content.push('\n');
-            }
-            content.push_str(&format!("\n{REMEMBERED_FACTS_SECTION_HEADER}\n{bullet}\n"));
+            content.push_str(&format!("\n{section_header}\n{new_lines}\n"));
             content
         };
 
@@ -268,6 +291,24 @@ mod tests {
         assert!(content.contains(REMEMBERED_FACTS_SECTION_HEADER));
         assert!(content.contains("User prefers concise responses"));
         assert!(content.contains("User uses Rust"));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn appends_user_observation_and_grounded_fact_sections() {
+        let workspace = std::env::temp_dir().join(format!("femtobot-memtest-{}", Uuid::new_v4()));
+        let store = MemoryStore::new(workspace.clone());
+
+        store.append_user_observation("I prefer concise replies.");
+        store.append_grounded_fact("Build succeeded in 2m31s", "cargo build", 0.92);
+
+        let content = store.read_long_term();
+        assert!(content.contains(USER_OBSERVATIONS_SECTION_HEADER));
+        assert!(content.contains("I prefer concise replies."));
+        assert!(content.contains(GROUNDED_FACTS_SECTION_HEADER));
+        assert!(content.contains("source: cargo build"));
+        assert!(content.contains("confidence: 0.92"));
 
         let _ = fs::remove_dir_all(workspace);
     }

@@ -14,6 +14,18 @@ fn allowed_memory_path(name: &str) -> bool {
     is_daily_memory_file(name)
 }
 
+fn normalize_memory_path(path: &str) -> Option<String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(
+        path.strip_prefix("memory/")
+            .map(|rest| rest.to_string())
+            .unwrap_or_else(|| path.to_string()),
+    )
+}
+
 fn is_daily_memory_file(name: &str) -> bool {
     if name.len() != 13 || !name.ends_with(".md") {
         return false;
@@ -92,6 +104,9 @@ pub struct MemorySearchArgs {
     /// Max results to return
     #[serde(default = "default_max_results")]
     pub max_results: usize,
+    /// Namespace for vector memory in Smart mode (example: telegram_123456)
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 fn default_max_results() -> usize {
@@ -102,6 +117,8 @@ fn default_max_results() -> usize {
 struct MemorySearchResult {
     path: String,
     snippet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     score: Option<f32>,
 }
@@ -119,7 +136,7 @@ impl Tool for MemorySearchTool {
         async {
             ToolDefinition {
                 name: Self::NAME.to_string(),
-                description: "Semantically search MEMORY.md and memory/*.md for prior work, decisions, dates, people, preferences, or todos. Use before answering questions about past context. Returns snippets with path and score.".to_string(),
+                description: "Semantically search memory for prior work, decisions, dates, people, preferences, or todos. In smart mode pass namespace (channel_chat_id style, e.g. telegram_123456) to avoid cross-session recall. Returns snippets with path and score.".to_string(),
                 parameters: serde_json::to_value(schemars::schema_for!(MemorySearchArgs)).unwrap(),
             }
         }
@@ -133,17 +150,30 @@ impl Tool for MemorySearchTool {
         let vector_store = self.vector_store.clone();
         let query = args.query;
         let max_results = args.max_results.min(20);
+        let namespace = args.namespace;
 
         async move {
             if let Some(vs) = &vector_store {
-                // Smart mode: vector search (uses store's default namespace)
-                match vs.search(&query, max_results, 0.0, None, 0.3).await {
+                let namespace =
+                    match namespace.as_deref() {
+                        Some(ns) if !ns.trim().is_empty() => ns,
+                        _ => return Ok(
+                            "Error: namespace is required in smart mode (example: telegram_123456)"
+                                .to_string(),
+                        ),
+                    };
+                // Smart mode: vector search in the provided namespace.
+                match vs
+                    .search(&query, max_results, 0.0, Some(namespace), 0.3)
+                    .await
+                {
                     Ok(pairs) => {
                         let results: Vec<MemorySearchResult> = pairs
                             .into_iter()
                             .map(|(item, score)| MemorySearchResult {
-                                path: "vector".to_string(),
+                                path: format!("vector/{}", item.id),
                                 snippet: item.content,
+                                memory_id: Some(item.id),
                                 score: Some(score),
                             })
                             .collect();
@@ -166,6 +196,7 @@ impl Tool for MemorySearchTool {
                             results.push(MemorySearchResult {
                                 path: path.clone(),
                                 snippet: line.trim().to_string(),
+                                memory_id: None,
                                 score: None,
                             });
                             if results.len() >= max_results {
@@ -211,6 +242,7 @@ mod tests {
                 tool.call(MemorySearchArgs {
                     query: "rust-analyzer".to_string(),
                     max_results: 5,
+                    namespace: None,
                 })
                 .await
             })
@@ -236,15 +268,66 @@ mod tests {
             .block_on(async {
                 tool.call(RememberArgs {
                     content: "User prefers terminal workflows".to_string(),
+                    kind: None,
+                    namespace: None,
+                    source: None,
+                    confidence: None,
                 })
                 .await
             })
             .expect("tool call");
 
-        assert!(out.contains("Remembered:"));
+        assert!(out.contains("Remembered (remembered_fact)"));
         let content = store.read_long_term();
         assert!(content.contains("User prefers terminal workflows"));
 
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn memory_get_vector_path_requires_vector_mode() {
+        let workspace = std::env::temp_dir().join(format!("femtobot-tooltest-{}", Uuid::new_v4()));
+        let store = MemoryStore::new(workspace.clone());
+        let tool = MemoryGetTool::new(store, None);
+        let rt = Runtime::new().expect("runtime");
+
+        let out = rt
+            .block_on(async {
+                tool.call(MemoryGetArgs {
+                    path: "vector/test-id".to_string(),
+                    namespace: None,
+                    from: None,
+                    lines: None,
+                })
+                .await
+            })
+            .expect("tool call");
+
+        assert!(out.contains("vector memory is not enabled"));
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn memory_get_accepts_memory_prefixed_paths() {
+        let workspace = std::env::temp_dir().join(format!("femtobot-tooltest-{}", Uuid::new_v4()));
+        let store = MemoryStore::new(workspace.clone());
+        std::fs::write(store.memory_dir().join("MEMORY.md"), "hello memory\n").expect("write");
+        let tool = MemoryGetTool::new(store, None);
+        let rt = Runtime::new().expect("runtime");
+
+        let out = rt
+            .block_on(async {
+                tool.call(MemoryGetArgs {
+                    path: "memory/MEMORY.md".to_string(),
+                    namespace: None,
+                    from: None,
+                    lines: None,
+                })
+                .await
+            })
+            .expect("tool call");
+
+        assert!(out.contains("hello memory"));
         let _ = std::fs::remove_dir_all(workspace);
     }
 }
@@ -256,18 +339,25 @@ mod tests {
 #[derive(Clone)]
 pub struct MemoryGetTool {
     memory_store: MemoryStore,
+    vector_store: Option<VectorMemoryStore>,
 }
 
 impl MemoryGetTool {
-    pub fn new(memory_store: MemoryStore) -> Self {
-        Self { memory_store }
+    pub fn new(memory_store: MemoryStore, vector_store: Option<VectorMemoryStore>) -> Self {
+        Self {
+            memory_store,
+            vector_store,
+        }
     }
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct MemoryGetArgs {
-    /// Path relative to memory/ (e.g. MEMORY.md or 2025-02-14.md)
+    /// Memory path: MEMORY.md, YYYY-MM-DD.md, or vector/<memory-id>
     pub path: String,
+    /// Namespace for vector memory when reading vector/<memory-id>
+    #[serde(default)]
+    pub namespace: Option<String>,
     /// Start line (1-based)
     #[serde(default)]
     pub from: Option<usize>,
@@ -289,7 +379,7 @@ impl Tool for MemoryGetTool {
         async {
             ToolDefinition {
                 name: Self::NAME.to_string(),
-                description: "Read MEMORY.md or memory/YYYY-MM-DD.md by path. Use after memory_search to pull specific lines. Path must be MEMORY.md or a date file like 2025-02-14.md.".to_string(),
+                description: "Read memory by path. Supports MEMORY.md, memory/MEMORY.md, YYYY-MM-DD.md, memory/YYYY-MM-DD.md, and vector/<memory-id>. For vector/<memory-id> in smart mode, provide namespace.".to_string(),
                 parameters: serde_json::to_value(schemars::schema_for!(MemoryGetArgs)).unwrap(),
             }
         }
@@ -300,14 +390,46 @@ impl Tool for MemoryGetTool {
         args: Self::Args,
     ) -> impl std::future::Future<Output = Result<Self::Output, Self::Error>> + Send {
         let memory_store = self.memory_store.clone();
+        let vector_store = self.vector_store.clone();
         let path = args.path.trim().to_string();
+        let namespace = args.namespace;
         let from = args.from;
         let lines = args.lines;
 
         async move {
+            if let Some(memory_id) = path.strip_prefix("vector/") {
+                let memory_id = memory_id.trim();
+                if memory_id.is_empty() {
+                    return Ok("Error: vector path must be vector/<memory-id>".to_string());
+                }
+                let Some(store) = vector_store else {
+                    return Ok("Error: vector memory is not enabled".to_string());
+                };
+                let namespace = match namespace.as_deref() {
+                    Some(ns) if !ns.trim().is_empty() => ns,
+                    _ => {
+                        return Ok("Error: namespace is required for vector paths in smart mode (example: telegram_123456)".to_string())
+                    }
+                };
+                let item = match store.get(memory_id, Some(namespace)).await {
+                    Ok(Some(item)) => item,
+                    Ok(None) => return Ok(format!("Error: vector memory not found: {memory_id}")),
+                    Err(e) => return Ok(format!("Error: vector memory lookup failed: {e}")),
+                };
+                return Ok(serde_json::to_string_pretty(&serde_json::json!({
+                    "path": path,
+                    "text": item.content,
+                    "score": Value::Null
+                }))
+                .unwrap_or_else(|_| item.content));
+            }
+
+            let Some(path) = normalize_memory_path(&path) else {
+                return Ok("Error: path cannot be empty".to_string());
+            };
             if !allowed_memory_path(&path) {
                 return Ok(format!(
-                    "Error: path must be MEMORY.md or YYYY-MM-DD.md, got: {path}"
+                    "Error: path must be MEMORY.md, YYYY-MM-DD.md, or vector/<memory-id>, got: {path}"
                 ));
             }
             let full_path = memory_store.memory_dir().join(&path);
@@ -344,8 +466,11 @@ impl Tool for MemoryGetTool {
 
 #[derive(Clone)]
 enum RememberBackend {
-    Vector(VectorMemoryStore),
     File(MemoryStore),
+    Hybrid {
+        vector_store: VectorMemoryStore,
+        memory_store: MemoryStore,
+    },
 }
 
 #[derive(Clone)]
@@ -354,15 +479,44 @@ pub struct RememberTool {
 }
 
 impl RememberTool {
-    pub fn new_vector(vector_store: VectorMemoryStore) -> Self {
-        Self {
-            backend: RememberBackend::Vector(vector_store),
-        }
-    }
-
     pub fn new_file(memory_store: MemoryStore) -> Self {
         Self {
             backend: RememberBackend::File(memory_store),
+        }
+    }
+
+    pub fn new_hybrid(vector_store: VectorMemoryStore, memory_store: MemoryStore) -> Self {
+        Self {
+            backend: RememberBackend::Hybrid {
+                vector_store,
+                memory_store,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RememberKind {
+    RememberedFact,
+    ConversationObservation,
+    UserObservation,
+    GroundedFact,
+}
+
+impl Default for RememberKind {
+    fn default() -> Self {
+        Self::RememberedFact
+    }
+}
+
+impl RememberKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RememberedFact => "remembered_fact",
+            Self::ConversationObservation => "conversation_observation",
+            Self::UserObservation => "user_observation",
+            Self::GroundedFact => "grounded_fact",
         }
     }
 }
@@ -371,6 +525,18 @@ impl RememberTool {
 pub struct RememberArgs {
     /// Fact or information to remember
     pub content: String,
+    /// Memory type: remembered_fact, conversation_observation, user_observation, grounded_fact
+    #[serde(default)]
+    pub kind: Option<RememberKind>,
+    /// Namespace for vector memory in Smart mode (example: telegram_123456)
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Optional source for grounded facts (tool, URL, file path, API endpoint)
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Confidence score for grounded facts [0.0..1.0]
+    #[serde(default)]
+    pub confidence: Option<f32>,
 }
 
 impl Tool for RememberTool {
@@ -386,7 +552,7 @@ impl Tool for RememberTool {
         async {
             ToolDefinition {
                 name: Self::NAME.to_string(),
-                description: "Save important information to long-term memory. Use for preferences, facts, decisions, dates, people, or anything worth recalling later. For longer notes, use write_file to memory/MEMORY.md instead.".to_string(),
+                description: "Save information to long-term memory. Use kind to classify as remembered_fact, conversation_observation, user_observation, or grounded_fact. In smart mode pass namespace for vector memory isolation; grounded_facts can include source/confidence.".to_string(),
                 parameters: serde_json::to_value(schemars::schema_for!(RememberArgs)).unwrap(),
             }
         }
@@ -398,23 +564,77 @@ impl Tool for RememberTool {
     ) -> impl std::future::Future<Output = Result<Self::Output, Self::Error>> + Send {
         let backend = self.backend.clone();
         let content = args.content.trim().to_string();
+        let kind = args.kind.unwrap_or_default();
+        let namespace = args.namespace;
+        let source = args.source;
+        let confidence = args.confidence.unwrap_or(0.7).clamp(0.0, 1.0);
 
         async move {
             if content.is_empty() {
                 return Ok("Error: content cannot be empty".to_string());
             }
             match backend {
-                RememberBackend::Vector(store) => {
-                    let mut meta = HashMap::new();
-                    meta.insert("importance".to_string(), Value::from(0.7));
-                    match store.add(&content, meta, Some("default"), None).await {
-                        Ok(item) => Ok(format!("Remembered: {}", item.content)),
-                        Err(e) => Ok(format!("Error: {e}")),
-                    }
-                }
                 RememberBackend::File(store) => {
-                    store.append_remembered_fact(&content);
-                    Ok(format!("Remembered: {}", content))
+                    match kind {
+                        RememberKind::RememberedFact => store.append_remembered_fact(&content),
+                        RememberKind::ConversationObservation => {
+                            store.append_conversation_observation(&content)
+                        }
+                        RememberKind::UserObservation => store.append_user_observation(&content),
+                        RememberKind::GroundedFact => store.append_grounded_fact(
+                            &content,
+                            source.as_deref().unwrap_or("conversation"),
+                            confidence,
+                        ),
+                    }
+                    Ok(format!("Remembered ({})", kind.as_str()))
+                }
+                RememberBackend::Hybrid {
+                    vector_store,
+                    memory_store,
+                } => {
+                    match kind {
+                        RememberKind::RememberedFact => {
+                            memory_store.append_remembered_fact(&content)
+                        }
+                        RememberKind::ConversationObservation => {
+                            memory_store.append_conversation_observation(&content)
+                        }
+                        RememberKind::UserObservation => {
+                            memory_store.append_user_observation(&content)
+                        }
+                        RememberKind::GroundedFact => memory_store.append_grounded_fact(
+                            &content,
+                            source.as_deref().unwrap_or("conversation"),
+                            confidence,
+                        ),
+                    }
+                    let namespace = match namespace.as_deref() {
+                        Some(ns) if !ns.trim().is_empty() => ns,
+                        _ => {
+                            return Ok("Remembered in file memory only: namespace is required for vector memory in smart mode (example: telegram_123456)".to_string())
+                        }
+                    };
+                    let mut meta = HashMap::new();
+                    meta.insert("importance".to_string(), Value::from(confidence as f64));
+                    meta.insert("confidence".to_string(), Value::from(confidence as f64));
+                    meta.insert("kind".to_string(), Value::from(kind.as_str()));
+                    if let Some(src) = source {
+                        if !src.trim().is_empty() {
+                            meta.insert("source".to_string(), Value::from(src));
+                        }
+                    }
+                    match vector_store
+                        .add(&content, meta, Some(namespace), None)
+                        .await
+                    {
+                        Ok(_) => Ok(format!("Remembered ({})", kind.as_str())),
+                        Err(e) => Ok(format!(
+                            "Remembered in file memory ({}) (vector add failed: {})",
+                            kind.as_str(),
+                            e
+                        )),
+                    }
                 }
             }
         }
