@@ -1,6 +1,6 @@
 <div align="center">
   <img src="public/femtobot.svg" height="128">
-  <h1>lightclaw: The Real Lightweight AI Assistant</h1>
+  <h1>LightClaw: The Real Lightweight AI Assistant</h1>
   <p>
     <img src="https://img.shields.io/badge/language-Rust-orange" alt="Rust">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
