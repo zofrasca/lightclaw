@@ -29,3 +29,6 @@
 *.swo
 
 .firecrawl/
+
+# Local deployment worker file
+/worker.js

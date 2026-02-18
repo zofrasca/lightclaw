@@ -6,16 +6,20 @@ mod configure;
 mod cron;
 mod memory;
 mod providers;
+mod service;
 mod session_compaction;
 mod skills;
 mod tools;
 mod transcription;
+mod uninstall;
 
 use anyhow::{anyhow, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tokio::io::{self, AsyncBufReadExt};
 use tracing::{info, warn};
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
 #[command(name = "lightclaw", version, about = "lightclaw CLI")]
@@ -29,6 +33,7 @@ enum Commands {
     Run,
     Tui,
     Configure,
+    Uninstall,
     Skills {
         #[command(subcommand)]
         command: skills::cli::SkillsCommands,
@@ -37,6 +42,11 @@ enum Commands {
         /// Admin cron operations (tool-driven scheduling is preferred)
         #[command(subcommand)]
         command: CronCommands,
+    },
+    Service {
+        /// Manage lightclaw as a background service
+        #[command(subcommand)]
+        command: ServiceCommands,
     },
 }
 
@@ -50,20 +60,71 @@ enum CronCommands {
     },
 }
 
-pub async fn run_cli() -> Result<()> {
-    init_logging();
+#[derive(Subcommand)]
+enum ServiceCommands {
+    Install {
+        /// Use the system service level (admin/root)
+        #[arg(long, default_value_t = false)]
+        system: bool,
+    },
+    Uninstall {
+        /// Use the system service level (admin/root)
+        #[arg(long, default_value_t = false)]
+        system: bool,
+    },
+    Start {
+        /// Use the system service level (admin/root)
+        #[arg(long, default_value_t = false)]
+        system: bool,
+    },
+    Stop {
+        /// Use the system service level (admin/root)
+        #[arg(long, default_value_t = false)]
+        system: bool,
+    },
+    Restart {
+        /// Use the system service level (admin/root)
+        #[arg(long, default_value_t = false)]
+        system: bool,
+    },
+    Status {
+        /// Use the system service level (admin/root)
+        #[arg(long, default_value_t = false)]
+        system: bool,
+    },
+    Logs {
+        /// Follow logs live (like tail -f)
+        #[arg(short = 'f', long, default_value_t = false)]
+        follow: bool,
+        /// Number of lines to print before following
+        #[arg(long, default_value_t = 200)]
+        lines: usize,
+    },
+}
 
+pub async fn run_cli() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command.unwrap_or(Commands::Run) {
+    let Some(command) = cli.command else {
+        let mut cmd = Cli::command();
+        cmd.print_help()?;
+        println!();
+        return Ok(());
+    };
+    let write_runtime_logs = matches!(&command, Commands::Run | Commands::Tui);
+    init_logging(write_runtime_logs);
+
+    match command {
         Commands::Run => run().await,
         Commands::Tui => run_tui().await,
         Commands::Configure => configure::run(),
+        Commands::Uninstall => uninstall::run(),
         Commands::Skills { command } => {
             tokio::task::spawn_blocking(move || skills::cli::handle_skills(command))
                 .await
                 .map_err(|err| anyhow!("skills command task failed: {err}"))?
         }
         Commands::Cron { command } => handle_cron(command).await,
+        Commands::Service { command } => handle_service(command).await,
     }
 }
 
@@ -195,6 +256,26 @@ async fn handle_cron(cmd: CronCommands) -> Result<()> {
     Ok(())
 }
 
+async fn handle_service(cmd: ServiceCommands) -> Result<()> {
+    let scope = |system: bool| {
+        if system {
+            service::Scope::System
+        } else {
+            service::Scope::User
+        }
+    };
+
+    match cmd {
+        ServiceCommands::Install { system } => service::install(scope(system)),
+        ServiceCommands::Uninstall { system } => service::uninstall(scope(system)),
+        ServiceCommands::Start { system } => service::start(scope(system)),
+        ServiceCommands::Stop { system } => service::stop(scope(system)),
+        ServiceCommands::Restart { system } => service::restart(scope(system)),
+        ServiceCommands::Status { system } => service::status(scope(system)),
+        ServiceCommands::Logs { follow, lines } => service::logs(lines, follow).await,
+    }
+}
+
 async fn run_tui() -> Result<()> {
     let cfg = config::AppConfig::load()?;
     let bus = bus::MessageBus::new();
@@ -247,11 +328,53 @@ async fn run_tui() -> Result<()> {
     Ok(())
 }
 
-fn init_logging() {
+fn init_logging(write_runtime_logs: bool) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    let stdout_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
-        .compact()
+        .compact();
+
+    if write_runtime_logs {
+        let log_path = config::log_file_path();
+        if let Some(log_dir) = log_path.parent() {
+            if let Err(err) = std::fs::create_dir_all(log_dir) {
+                eprintln!(
+                    "warning: failed to create log directory {}: {}",
+                    log_dir.display(),
+                    err
+                );
+            } else {
+                let file_appender = tracing_appender::rolling::never(log_dir, "lightclaw.log");
+                let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+                keep_logging_guard(guard);
+
+                tracing_subscriber::registry()
+                    .with(filter)
+                    .with(stdout_layer)
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_ansi(false)
+                            .with_target(true)
+                            .compact()
+                            .with_writer(non_blocking),
+                    )
+                    .init();
+                return;
+            }
+        }
+    }
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(stdout_layer)
         .init();
+}
+
+fn keep_logging_guard(guard: WorkerGuard) {
+    use std::sync::{Mutex, OnceLock};
+    static GUARDS: OnceLock<Mutex<Vec<WorkerGuard>>> = OnceLock::new();
+    let bucket = GUARDS.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(mut guards) = bucket.lock() {
+        guards.push(guard);
+    }
 }

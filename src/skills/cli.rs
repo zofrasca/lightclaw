@@ -9,18 +9,13 @@ use std::path::Path;
 
 #[derive(Subcommand, Debug)]
 pub enum SkillsCommands {
-    /// Search skills on ClawHub
+    /// Search skills across ClawHub and skills.sh
     Search {
         /// Plain-language query
         query: String,
-        /// Limit number of results
-        #[arg(long)]
-        limit: Option<u32>,
-    },
-    /// Search skills via skills.sh
-    Find {
-        /// Keyword query
-        query: Option<String>,
+        /// Search backend
+        #[arg(long, value_enum, default_value_t = SkillSearchSource::All)]
+        from: SkillSearchSource,
         /// Limit number of results
         #[arg(long)]
         limit: Option<u32>,
@@ -59,6 +54,13 @@ pub enum SkillInstaller {
     Skills,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum SkillSearchSource {
+    All,
+    Clawhub,
+    Skills,
+}
+
 pub fn handle_skills(command: SkillsCommands) -> Result<()> {
     let cfg = AppConfig::load_relaxed();
     std::fs::create_dir_all(&cfg.workspace_dir)?;
@@ -69,20 +71,28 @@ pub fn handle_skills(command: SkillsCommands) -> Result<()> {
     let hub = Skillhub::new()?;
 
     match command {
-        SkillsCommands::Search { query, limit } => {
-            let results = hub.search_clawhub(&query, normalize_limit(limit, 10))?;
-            print_clawhub_results(&query, &results);
-            Ok(())
-        }
-        SkillsCommands::Find { query, limit } => {
-            let query = query
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("`lightclaw skills find` requires a query"))?;
-            let results = hub.search_skills_sh(query, normalize_limit(limit, 10))?;
-            print_skills_sh_results(query, &results);
-            Ok(())
+        SkillsCommands::Search { query, from, limit } => {
+            let limit = normalize_limit(limit, 10);
+            match from {
+                SkillSearchSource::All => {
+                    let clawhub = hub.search_clawhub(&query, limit)?;
+                    let skills_sh = hub.search_skills_sh(&query, limit)?;
+                    print_clawhub_results(&query, &clawhub);
+                    println!();
+                    print_skills_sh_results(&query, &skills_sh);
+                    Ok(())
+                }
+                SkillSearchSource::Clawhub => {
+                    let results = hub.search_clawhub(&query, limit)?;
+                    print_clawhub_results(&query, &results);
+                    Ok(())
+                }
+                SkillSearchSource::Skills => {
+                    let results = hub.search_skills_sh(&query, limit)?;
+                    print_skills_sh_results(&query, &results);
+                    Ok(())
+                }
+            }
         }
         SkillsCommands::Install {
             from,

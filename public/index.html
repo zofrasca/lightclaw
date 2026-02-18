@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LightClaw</title>
+  <style>
+    :root {
+      color-scheme: dark;
+
+      --bg: #0b0c0f;
+      --panel: #121317;
+      --border: rgba(255, 255, 255, 0.08);
+
+      --text: rgba(255, 255, 255, 0.88);
+      --muted: rgba(255, 255, 255, 0.55);
+
+      --radius: 14px;
+
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    main {
+      max-width: 720px;
+      margin: 80px auto;
+      padding: 0 20px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 2.4rem;
+      letter-spacing: -0.02em;
+    }
+
+    p {
+      margin: 0 0 28px;
+      color: var(--muted);
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+    }
+
+
+    .command {
+      margin-bottom: 14px;
+      padding: 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    code {
+      font-family: var(--mono);
+      font-size: 0.95rem;
+      white-space: nowrap;
+      overflow-x: auto;
+    }
+
+    button {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 6px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+
+    button:hover {
+      color: var(--text);
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+
+    a {
+      color: var(--text);
+      text-decoration: underline;
+      text-decoration-color: rgba(255, 255, 255, 0.25);
+    }
+
+    a:hover {
+      text-decoration-color: rgba(255, 255, 255, 0.5);
+    }
+
+    footer {
+      margin-top: 32px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <img src="femtobot.svg" alt="LightClaw" style="height: 64px; margin-bottom: 16px;">
+    <p>A fast, local-first AI assistant in a single Rust binary.</p>
+
+    <h2>Install</h2>
+
+    <div class="command">
+      <code id="cmd1">curl -fsSL https://lightclaw.dev/install.sh | bash</code>
+      <button onclick="copy('cmd1', this)">Copy</button>
+    </div>
+
+    <h2>then</h2>
+
+    <div class="command">
+      <code id="cmd2">lightclaw configure</code>
+      <button onclick="copy('cmd2', this)">Copy</button>
+    </div>
+
+
+    <footer>
+      Learn more on
+      <a href="https://github.com/zofrasca/lightclaw">GitHub</a>.
+    </footer>
+  </main>
+
+  <script>
+    function copy(id, btn) {
+      const text = document.getElementById(id).innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = "Copied";
+        setTimeout(() => (btn.textContent = "Copy"), 1500);
+      });
+    }
+  </script>
+</body>
+
+</html>

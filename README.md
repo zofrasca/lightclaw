@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="public/femtobot.svg" height="128">
   <h1>lightclaw: The Real Lightweight AI Assistant</h1>
   <p>
     <img src="https://img.shields.io/badge/language-Rust-orange" alt="Rust">
@@ -8,13 +9,13 @@
   </p>
 </div>
 
-`lightclaw` is a fast, local-first AI assistant inspired by [OpenClaw](https://github.com/openclaw/openclaw) and [nanobot](https://github.com/HKUDS/nanobot), packaged as a single Rust binary.
+`LightClaw` is a fast, local-first AI assistant inspired by [OpenClaw](https://github.com/openclaw/openclaw) and [nanobot](https://github.com/HKUDS/nanobot), packaged as a single Rust binary.
 
 If you want agentic tooling, memory, and Telegram/Discord integration without a heavy runtime, lightclaw is built for that.
 
 ## Why lightclaw
 
-| Metric | OpenClaw | Nanobot | lightclaw |
+| Metric | OpenClaw | Nanobot | LightClaw |
 |--------|----------|---------|----------|
 | Distribution | Complex repo | Python + venv | **Single binary** |
 | Disk overhead | Heavy | ~350MB env | **~15MB total** |
@@ -24,9 +25,8 @@ If you want agentic tooling, memory, and Telegram/Discord integration without a 
 ## 60-Second Quickstart
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zofrasca/lightclaw/main/scripts/install.sh | bash
+curl -fsSL https://lightclaw.dev/install.sh | bash
 lightclaw configure
-lightclaw
 ```
 
 Supported platforms:
@@ -49,7 +49,7 @@ Note: A Windows binary exists, but it is currently less stable and not as well-s
 
 ## Memory System
 
-lightclaw includes Rig-style long-term memory:
+LightClaw includes long-term memory:
 
 - Short-term chat history per session.
 - Periodic summarization of recent conversation chunks.
@@ -118,8 +118,6 @@ Create `~/.lightclaw/config.json`:
 }
 ```
 
-`tools.web.search.provider` controls both `web_search` and `web_fetch` tool backends.
-
 ## Build From Source
 
 ```bash
@@ -135,7 +133,7 @@ Cross-platform build script:
 
 ## Architecture
 
-lightclaw uses an actor-like model with a central `MessageBus`:
+LightClaw uses an actor-like model with a central `MessageBus`:
 
 - `Agent`: context handling and LLM orchestration.
 - `Telegram`: chat input/output transport.
@@ -157,14 +155,17 @@ When relevant, the model can call `activate_skill` to load the full instructions
 
 ### Skills CLI
 
-lightclaw includes a native `skills` command group backed by Rust APIs for ClawHub and skills.sh/source installs.
+LightClaw includes a native `skills` command group backed by Rust APIs for ClawHub and skills.sh/source installs.
 
 ```bash
-# Search on ClawHub
+# Search across all backends (default: ClawHub + skills.sh)
 lightclaw skills search "calendar"
 
-# Search on skills.sh
-lightclaw skills find react
+# Search on skills.sh only
+lightclaw skills search react --from skills
+
+# Search on ClawHub only
+lightclaw skills search react --from clawhub
 
 # Install from ClawHub
 lightclaw skills install weather --from clawhub
@@ -174,6 +175,34 @@ lightclaw skills install vercel-labs/agent-skills --from skills
 ```
 
 For `--from skills`, installs land in `./skills` under the workspace.
+
+### Service CLI
+
+LightClaw also includes a native `service` command group to manage a background daemon and stream logs with the same commands across platforms.
+
+```bash
+# Install and start a user-level service
+lightclaw service install
+
+# Check service state
+lightclaw service status
+
+# Restart/stop/start
+lightclaw service restart
+lightclaw service stop
+lightclaw service start
+
+# Stream runtime logs
+lightclaw service logs -f
+
+# Remove the service
+lightclaw service uninstall
+
+# Full uninstall wizard (service + optional files + optional binary)
+lightclaw uninstall
+```
+
+By default, service commands target user-level services. Use `--system` for system-level service operations.
 
 ## Project Structure
 
@@ -200,7 +229,7 @@ src/
 
 ## Powered by Rig
 
-lightclaw is built on [Rig](https://rig.rs/), which provides:
+LightClaw is built on [Rig](https://rig.rs/), which provides:
 
 - Provider abstraction across OpenAI/OpenRouter-style backends
 - Structured tool calling

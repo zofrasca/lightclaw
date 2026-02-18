@@ -181,96 +181,6 @@ EOF
     info "Run: lightclaw configure"
 }
 
-setup_service() {
-    if [[ "${OS_TYPE}" == "linux" ]]; then
-        if ! command -v systemctl >/dev/null 2>&1; then
-			info "systemctl is required on Linux for background daemon mode"
-			return 0
-        fi
-
-        local service_dir="$HOME/.config/systemd/user"
-        mkdir -p "${service_dir}"
-
-        cat > "${service_dir}/lightclaw.service" <<EOF
-[Unit]
-Description=lightclaw Telegram Bot
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=${INSTALL_DIR}/${BINARY_NAME}
-WorkingDirectory=${HOME}
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-
-        if ! systemctl --user daemon-reload; then
-            error "Failed to reload systemd user daemon"
-            exit 1
-        fi
-        if ! systemctl --user enable --now lightclaw; then
-            error "Failed to enable/start lightclaw service"
-            error "If running over SSH, user services may need login session support."
-            exit 1
-        fi
-
-        info "Daemon enabled and started with systemd user service"
-        return
-    fi
-
-    if [[ "${OS_TYPE}" == "darwin" ]]; then
-        local launch_dir="$HOME/Library/LaunchAgents"
-        local logs_dir="$HOME/.lightclaw/logs"
-        local plist="${launch_dir}/io.lightclaw.agent.plist"
-        local label="io.lightclaw.agent"
-        local uid
-        uid="$(id -u)"
-
-        mkdir -p "${launch_dir}" "${logs_dir}"
-
-        cat > "${plist}" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${INSTALL_DIR}/${BINARY_NAME}</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>WorkingDirectory</key>
-  <string>${HOME}</string>
-  <key>StandardOutPath</key>
-  <string>${logs_dir}/lightclaw.log</string>
-  <key>StandardErrorPath</key>
-  <string>${logs_dir}/lightclaw.error.log</string>
-</dict>
-</plist>
-EOF
-
-        launchctl bootout "gui/${uid}" "${plist}" >/dev/null 2>&1 || true
-        if ! launchctl bootstrap "gui/${uid}" "${plist}"; then
-            error "Failed to bootstrap launchd agent"
-            exit 1
-        fi
-        if ! launchctl kickstart -k "gui/${uid}/${label}"; then
-            error "Failed to start launchd agent"
-            exit 1
-        fi
-
-        info "Daemon enabled and started with launchd agent"
-        return
-    fi
-}
-
 main() {
     echo ""
     echo " lightclaw Installer"
@@ -336,7 +246,6 @@ main() {
     fi
 
     create_config
-    setup_service
 
     echo ""
     info "Installation complete!"
@@ -344,15 +253,11 @@ main() {
     echo "Binary: ${INSTALL_DIR}/${BINARY_NAME}"
     echo "Config: $HOME/.lightclaw/config.json"
     echo ""
-    if [[ "${OS_TYPE}" == "linux" ]] && [[ -f "$HOME/.config/systemd/user/lightclaw.service" ]]; then
-        echo "Service status: systemctl --user status lightclaw"
-        echo "Service logs:  journalctl --user -u lightclaw -f"
-    elif [[ "${OS_TYPE}" == "darwin" ]] && [[ -f "$HOME/Library/LaunchAgents/io.lightclaw.agent.plist" ]]; then
-        echo "Service status: launchctl print gui/$(id -u)/io.lightclaw.agent"
-        echo "Service logs:  tail -f $HOME/.lightclaw/logs/lightclaw.log"
-    else
-        echo "Run: ${BINARY_NAME}"
-    fi
+    echo "Next:"
+    echo "  1) lightclaw configure"
+    echo "     (on first save, lightclaw will install and start its background service)"
+    echo "  2) lightclaw service status"
+    echo "  3) lightclaw service logs -f"
     echo ""
 }
 

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
+use etcetera::{choose_base_strategy, BaseStrategy};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use etcetera::{choose_base_strategy, BaseStrategy};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -363,6 +363,14 @@ pub struct ModelRoute {
 
 pub fn config_path() -> PathBuf {
     default_config_path().unwrap_or_else(|| PathBuf::from(".lightclaw/config.json"))
+}
+
+pub fn logs_dir() -> PathBuf {
+    AppConfig::load_relaxed().data_dir.join("logs")
+}
+
+pub fn log_file_path() -> PathBuf {
+    logs_dir().join("lightclaw.log")
 }
 
 fn default_config_path() -> Option<PathBuf> {

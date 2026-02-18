@@ -1,3 +1,4 @@
+use crate::service::{self, RuntimeStatus, Scope};
 use anyhow::{anyhow, Result};
 use cliclack::{confirm, input, intro, log, outro, outro_cancel, password, select};
 use serde_json::{Map, Value};
@@ -86,9 +87,12 @@ pub fn run() -> Result<()> {
                 if dirty {
                     print_change_summary(&initial_root, &root);
                     save_config_value(&path, &root)?;
+                }
+                apply_service_lifecycle_after_save();
+                if dirty {
                     outro("Configuration saved.")?;
                 } else {
-                    outro("No changes to save.")?;
+                    outro("No changes to save. Service synchronized.")?;
                 }
                 break;
             }
@@ -305,7 +309,8 @@ fn configure_model(root: &mut Value) -> Result<bool> {
     let current_fallbacks_str = current_fallbacks.join(",");
 
     let model = prompt_str("Default model", current_model)?;
-    let fallbacks = prompt_str_optional("Fallback models (comma separated)", &current_fallbacks_str)?;
+    let fallbacks =
+        prompt_str_optional("Fallback models (comma separated)", &current_fallbacks_str)?;
     let fallback_list = parse_comma_list(&fallbacks, &current_fallbacks);
 
     set_path(root, &["agents", "defaults", "model"], Value::String(model))?;
@@ -841,4 +846,34 @@ fn get_u64_at(value: &Value, path: &[&str]) -> Option<u64> {
         cur = cur.get(*key)?;
     }
     cur.as_u64()
+}
+
+fn apply_service_lifecycle_after_save() {
+    let scope = Scope::User;
+    match service::query_status(scope) {
+        Ok(RuntimeStatus::NotInstalled) => {
+            log::step("Service setup").ok();
+            log::info("Background service is not installed; installing and starting it now.").ok();
+            if let Err(err) = service::install(scope) {
+                log::info(&format!("Could not install service automatically: {err}")).ok();
+                log::info("Run manually: lightclaw service install").ok();
+            }
+        }
+        Ok(RuntimeStatus::Running) | Ok(RuntimeStatus::Stopped(_)) => {
+            log::step("Service restart").ok();
+            log::info("Restarting background service to apply config changes.").ok();
+            if let Err(err) = service::restart(scope) {
+                log::info(&format!("Could not restart service automatically: {err}")).ok();
+                log::info("Run manually: lightclaw service restart").ok();
+            }
+        }
+        Err(err) => {
+            log::step("Service setup").ok();
+            log::info(&format!(
+                "Could not inspect service state automatically: {err}"
+            ))
+            .ok();
+            log::info("Run manually: lightclaw service install").ok();
+        }
+    }
 }
