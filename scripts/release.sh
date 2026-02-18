@@ -103,6 +103,7 @@ json_asset_id_by_name() {
 ASSETS=(
     "femtobot-linux-x86_64"
     "femtobot-linux-aarch64"
+    "femtobot-linux-armv7"
     "femtobot-darwin-x86_64"
     "femtobot-darwin-aarch64"
     "femtobot-windows-x86_64.exe"
@@ -129,7 +130,7 @@ RELEASE_DATA=$(cat <<EOF
 {
   "tag_name": "v${VERSION}",
   "name": "${RELEASE_NAME}",
-  "body": "femtobot v${VERSION}\n\nBinaries for Linux, macOS, and Windows (Intel and Apple Silicon where supported)",
+  "body": "femtobot v${VERSION}\n\nBinaries for Linux (x86_64, aarch64, armv7), macOS, and Windows (Intel and Apple Silicon where supported)",
   "draft": false,
   "prerelease": ${IS_PRERELEASE}
 }

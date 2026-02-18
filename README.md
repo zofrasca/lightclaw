@@ -33,6 +33,7 @@ femtobot
 Supported platforms:
 - Linux x86_64
 - Linux ARM64 (Raspberry Pi 4/5, ARM servers)
+- Linux ARMv7 (e.g. older ARM devices / e-readers)
 - macOS x86_64
 - macOS ARM64 (Apple Silicon)
 

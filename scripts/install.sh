@@ -83,7 +83,7 @@ resolve_download_url() {
 is_supported_platform() {
     local platform="$1"
     case "${platform}" in
-        linux-x86_64|linux-aarch64|darwin-x86_64|darwin-aarch64)
+        linux-x86_64|linux-aarch64|linux-armv7|darwin-x86_64|darwin-aarch64)
             return 0
             ;;
         *)
@@ -286,13 +286,13 @@ main() {
 
     if [[ "${OS_TYPE}" == "unknown" ]] || [[ "${ARCH_TYPE}" == "unknown" ]]; then
         error "Unable to detect your platform: $(uname -s) $(uname -m)"
-        error "Supported platforms: linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64"
+        error "Supported platforms: linux-x86_64, linux-aarch64, linux-armv7, darwin-x86_64, darwin-aarch64"
         exit 1
     fi
 
     if ! is_supported_platform "${PLATFORM}"; then
         error "Unsupported platform: ${PLATFORM}"
-        error "Supported platforms: linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64"
+        error "Supported platforms: linux-x86_64, linux-aarch64, linux-armv7, darwin-x86_64, darwin-aarch64"
         exit 1
     fi
 

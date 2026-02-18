@@ -11,6 +11,7 @@ mkdir -p "${DIST_DIR}"
 TARGETS=(
     "x86_64-unknown-linux-gnu"
     "aarch64-unknown-linux-gnu"
+    "armv7-unknown-linux-musleabihf"
     "x86_64-apple-darwin"
     "aarch64-apple-darwin"
     "x86_64-pc-windows-gnu"
@@ -44,6 +45,16 @@ for target in "${TARGETS[@]}"; do
             "AR_${target_env}=${ar_tool}" \
             "CARGO_TARGET_${target_env_upper}_LINKER=${linker}" \
             cargo build --release --target "${target}"
+    elif [[ "${target}" == *"unknown-linux-musl"* ]]; then
+        if ! command -v zig >/dev/null 2>&1 || ! cargo zigbuild --help >/dev/null 2>&1; then
+            echo "Missing build tooling for ${target}: zig and cargo-zigbuild are required"
+            echo "Install with:"
+            echo "  brew install zig"
+            echo "  cargo install cargo-zigbuild"
+            exit 1
+        fi
+
+        cargo zigbuild --release --target "${target}"
     elif [[ "${target}" == *"pc-windows-gnu" ]]; then
         linker="x86_64-w64-mingw32-gcc"
         if ! command -v "${linker}" >/dev/null 2>&1; then
@@ -65,7 +76,7 @@ for target in "${TARGETS[@]}"; do
     
     # Determine output name
     case "${target}" in
-        *-unknown-linux-gnu)
+        *-unknown-linux-gnu|*-unknown-linux-musl*)
             output_name="${PROJECT_NAME}-linux-${target%%-*}"
             ;;
         *-apple-darwin)
